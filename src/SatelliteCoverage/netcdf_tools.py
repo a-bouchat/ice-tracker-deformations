@@ -544,6 +544,259 @@ def plot_deformations(data_in=None, config=None):
 
     return None
 
+# Divides raw data into intervals specified by the user
+# version adapted to the netcdf to replace the one in config
+def divide_intervals(config=None):
+    """
+    Divides delta-t filtered data into chunks (intervals) of *interval* hours for
+    processing.
+
+    INPUTS:
+    raw_paths -- List of data file paths with the desired delta t {list}
+    Date_options -- ConfigParser object to determine start/end dates of intervals as specififed by user
+    Options -- ConfigParser object to determine the interval length as specififed by user
+
+    OUTPUTS:
+    interval_list -- List of n lists, where n is the number of full intervals which
+                     fit in the min and max dates of coverage. Each nested list (n th)
+                     contains the paths to files which share a date range (even partially)
+                     with the n th interval.
+    date_pairs -- List of tuples, each containing the start and end dates of the n th interval (datetime
+                  objects in tuples, all in a list)
+
+    """
+
+    # raw_paths = config['raw_list']
+    Date_options = config['Date_options']
+    options = config['options']
+
+
+    start_year  = str(Date_options['start_year'])
+    start_month = str(Date_options['start_month'])
+    start_day   = str(Date_options['start_day'])
+    end_year    = str(Date_options['end_year'])
+    end_month   = str(Date_options['end_month'])
+    end_day     = str(Date_options['end_day'])
+    interval    = options['interval']
+
+    # Concatenate start and end dates
+    sDate = datetime.strptime(start_year + start_month + start_day, '%Y%m%d')
+    eDate = datetime.strptime(end_year + end_month + end_day, '%Y%m%d')
+
+    # Converting date range to timedelta object (hours)
+    date_range = (eDate - sDate)
+    date_range = date_range.days * 24
+
+    # Counting number of full intervals over date range {int}
+    interval_count = date_range // int(interval)
+
+    # Allowing *min_date* to be updated and initializing time difference object
+    min_date_it = sDate
+    dtime = timedelta(hours=int(interval))
+
+    # Creating list containing tuples of date ranges [(dt1, dt2), (dt2, dt3) ...]
+    date_pairs = []
+    for i in range(interval_count):
+        date_pairs.append((min_date_it, min_date_it + dtime))
+        min_date_it = min_date_it + dtime
+
+    # Sorting files into intervals
+    interval_list = []
+    for pair in date_pairs:
+
+        # Initializing temporary list to store dates in interval
+        temp_list = []
+
+        # Checking if date range of file overlaps with interval (if true, append)
+        for img_id in tqdm(np.unique(data['no'])):
+
+            # Setting maximum index
+            index = np.where(data['no'] == img_id)[0][0]
+
+            initial_date = data['start_time'][index]/3600
+            final_date = data['end_time'][index]/3600
+
+            if (initial_date <= pair[1]) and (final_date >= pair[0]):
+                temp_list.append(img_id)
+
+        # Appending list of interval-contained files
+        interval_list.append(temp_list)
+
+    return interval_list, date_pairs
+
+
+def video_deformations(data_in=None, config=None):
+    """
+    This function makes videos of deformations patches in time from a netCDF file using matplotlib's ax.tripcolor.
+    The function assumes that the netCDF was generated from src/SeaIceDeformation's utils_compute_deformations.py.
+
+    INUPTS:
+    path -- Path to netCDF {str}
+
+    OUTPUTS:
+    None -- Saves divergence, shear, and vorticity plots to the output directory
+    """
+    try:
+        path = config['IO']['netcdf_path']
+    except:
+        path = None
+
+    # Loading data from netcdf as a dictionary
+    if path != None and data_in == None :
+        data = load_netcdf(config=config)
+    elif path == None and data_in != None :
+        data = data_in
+    elif path == None and data_in == None or path != None and data != None :
+        print('You need to give at least one path or data to plot and not both ')
+
+    """
+    Preamble
+    """
+    # Set the matplotlib projection and transform
+    proj = ccrs.NorthPolarStereo(central_longitude=0)
+    trans = ccrs.Geodetic()
+
+    # Initialize figures for total deformation (tot), divergence (I) and shear (II)
+    fig_div = plt.figure()
+    fig_shr = plt.figure()
+    fig_vrt = plt.figure()
+
+    # Initialize subplots
+    ax_div = fig_div.add_subplot(111, projection=proj)
+    ax_shr = fig_shr.add_subplot(111, projection=proj)
+    ax_vrt = fig_vrt.add_subplot(111, projection=proj)
+
+    # Create a list of axes to be iterated over
+    ax_list = [ax_div, ax_shr, ax_vrt]
+
+    for ax in ax_list:
+        # Set the map extent in order to see the entire region of interest
+        ax.set_extent((-4400000, 2500000, 3500000, -2500000), ccrs.NorthPolarStereo())
+
+    """
+    Plotting
+    """
+
+    img_nbr_lists, date_pairs = divide_intervals(config=config)
+
+    print('--- Creating sea-ice deformation videos ---')
+
+    # Iterating over all files (Unique triangulations)
+    for i in tqdm(date_pairs):
+
+        date = date_pairs[i][0]
+
+        img_nbr_list = img_nbr_lists[i]
+
+        # Obtaining number of rows corresponding to triangles in given file that will be iterated over
+        file_length = np.count_nonzero(data['no'] == i)
+
+        # Setting maximum index
+        min_index = np.where(data['no'] == i)[0][0]
+        max_index = np.where(data['no'] == i)[0][-1]+1
+
+        # Arranging triangle vertices in array for use in ax.tripcolor
+        triangles = np.stack((data['idx1'][min_index:max_index], data['idx2'][min_index:max_index],
+                    data['idx3'][min_index:max_index]), axis=-1)
+
+        # Filtering data range to that of the current "file"
+        start_lat1_temp, start_lat2_temp, start_lat3_temp = data['start_lat1'][min_index:max_index], \
+            data['start_lat2'][min_index:max_index], data['start_lat3'][min_index:max_index]
+
+        start_lon1_temp, start_lon2_temp, start_lon3_temp = data['start_lon1'][min_index:max_index], \
+            data['start_lon2'][min_index:max_index], data['start_lon3'][min_index:max_index]
+
+        start_lat, start_lon = recreate_coordinates(start_lat1_temp, start_lat2_temp, start_lat3_temp,
+                                                        start_lon1_temp, start_lon2_temp, start_lon3_temp,
+                                                        data['idx1'][min_index:max_index],
+                                                        data['idx2'][min_index:max_index],
+                                                        data['idx3'][min_index:max_index])
+
+        # Extracting deformation data
+        div_colours = data['div'][min_index:max_index]
+        shr_colours = data['shr'][min_index:max_index]
+        vrt_colours = data['vrt'][min_index:max_index]
+
+        # tranform the coordinates already to improve the plot efficiency
+        new_coords = proj.transform_points(trans, np.array(start_lon), np.array(start_lat))
+
+        # create one triangulation object
+        tria = tri.Triangulation(new_coords[:,0], new_coords[:,1], triangles=triangles)
+
+        if len(triangles) != 0:
+        # Plotting
+            cb_div = ax_div.tripcolor(tria, facecolors=div_colours, cmap='coolwarm', vmin=-0.04, vmax=0.04)
+            cb_shr = ax_shr.tripcolor(tria, facecolors=shr_colours, cmap='plasma', vmin=0, vmax=0.1)
+            cb_vrt = ax_vrt.tripcolor(tria, facecolors=vrt_colours, cmap='coolwarm', vmin=-0.1, vmax=0.1)
+
+
+    # Create a list of colorbars and titles to be iterated over
+    cb_list = [cb_div, cb_shr, cb_vrt]
+    title_list = ['Divergence Rate $(Days^{-1})$', 'Shear Rate $(Days^{-1})$', 'Vorticity $(Days^{-1})$']
+
+    Date_options = config['Date_options']
+    start_year   = Date_options['start_year']
+    end_year     = Date_options['end_year']
+    start_month  = Date_options['start_month']
+    end_month    = Date_options['end_month']
+    start_day    = Date_options['start_day']
+    end_day      = Date_options['end_day']
+
+    timestep     = Date_options['timestep']
+    tolerance    = Date_options['tolerance']
+
+    IO            = config['IO']
+    output_folder = IO['output_folder']
+    exp           = IO['exp']
+
+    # Iterate through all axes
+    for ax, title, cb in zip(ax_list, title_list, cb_list):
+        # Add a colorbar
+        plt.colorbar(cb, ax=ax)
+
+        # Add a title
+        ax.set_title(title + '\n' + start_year + '-' + start_month + '-' + start_day + ' to ' +
+                        end_year + '-' + end_month + '-' + end_day + ', ' + timestep + 'hr \u00B1 ' + tolerance )
+
+        # Add gridlines
+        ax.gridlines()
+
+        # Hide deformations over land
+        ax.add_feature(cfeature.LAND, zorder=100, edgecolor='k')
+
+        '''
+        _________________________________________________________________________________________
+        SAVE PLOTS
+        '''
+
+    # Set a directory to store figures for the current experiment
+    figsPath =  output_folder + '/' + exp + '/figs/'
+
+    # Create the directory if it does not exist already
+    os.makedirs(figsPath, exist_ok=True)
+
+    itr = config['Metadata']['icetracker']
+    # Create a prefix for the figure filenames
+    prefix = get_prefix(config = config)
+
+    # Create the figure filenames
+    div_path   = figsPath + prefix + '_div.png'
+    shr_path = figsPath + prefix + '_shr.png'
+    rot_path   = figsPath + prefix + '_vrt.png'
+
+
+    for fig, fig_path in zip([fig_div, fig_shr, fig_vrt], [div_path, shr_path, rot_path]):
+
+        # Check if the figures already exist. If they do, delete them.
+        if os.path.isfile(fig_path):
+            os.remove(fig_path)
+
+        # Save the new figures
+        print('Saving deformation figure at ',fig_path)
+        fig.savefig(fig_path, bbox_inches='tight', dpi=600)
+
+    return None
+
 if __name__ == '__main__':
 
     # Retrieve the starting time
