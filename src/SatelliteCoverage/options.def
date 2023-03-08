@@ -100,3 +100,4 @@ visualise_interval   = True
 [netcdf_tools]
 plot_start_end_points = False
 plot_deformation      = True
+make_video            = True

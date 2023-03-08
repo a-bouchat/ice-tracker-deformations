@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import cartopy.feature as cfeature
 from tqdm import tqdm
 import haversine as hs
+from datetime import datetime, timedelta
 
 # Code from other files
 from SatelliteCoverage.config import read_config
@@ -246,6 +247,9 @@ def load_netcdf(config=None):
     start_time = start_time[time_indices]
     end_time = end_time[time_indices]
 
+    if len(start_time) < 0:
+        print('WARNING: No data of the specified interval in this netcdf package')
+
     # Extracting data (Filtered by time only)
     start_lat1 = (ds.variables['start_lat1'][:])[time_indices]
     start_lat2 = (ds.variables['start_lat2'][:])[time_indices]
@@ -281,10 +285,10 @@ def load_netcdf(config=None):
     max_date = seconds_to_date(path,np.max(end_time))
     print(f"Earliest/latest start/end dates of data included in deformation map: {min_date} to {max_date}")
 
-    reftime = ds.getncattr('referenceTime')
-    icetracker = ds.getncattr('icetracker')
-    timestep = ds.getncattr('timestep')
-    tolerance = ds.getncattr('tolerance')
+    reftime       = ds.getncattr('referenceTime')
+    icetracker    = ds.getncattr('icetracker')
+    timestep      = ds.getncattr('timestep')
+    tolerance     = ds.getncattr('tolerance')
     trackingerror = ds.getncattr('trackingError')
 
     if area_filter:
@@ -546,7 +550,7 @@ def plot_deformations(data_in=None, config=None):
 
 # Divides raw data into intervals specified by the user
 # version adapted to the netcdf to replace the one in config
-def divide_intervals(config=None):
+def divide_intervals(config=None, data=None):
     """
     Divides delta-t filtered data into chunks (intervals) of *interval* hours for
     processing.
@@ -570,6 +574,7 @@ def divide_intervals(config=None):
     Date_options = config['Date_options']
     options = config['options']
 
+    reftime=data['reftime']
 
     start_year  = str(Date_options['start_year'])
     start_month = str(Date_options['start_month'])
@@ -582,6 +587,7 @@ def divide_intervals(config=None):
     # Concatenate start and end dates
     sDate = datetime.strptime(start_year + start_month + start_day, '%Y%m%d')
     eDate = datetime.strptime(end_year + end_month + end_day, '%Y%m%d')
+    rTime = datetime.strptime(reftime, '%Y-%m-%d %H:%M:%S')
 
     # Converting date range to timedelta object (hours)
     date_range = (eDate - sDate)
@@ -602,21 +608,24 @@ def divide_intervals(config=None):
 
     # Sorting files into intervals
     interval_list = []
-    for pair in date_pairs:
+    for pair in tqdm(date_pairs):
 
         # Initializing temporary list to store dates in interval
         temp_list = []
 
         # Checking if date range of file overlaps with interval (if true, append)
-        for img_id in tqdm(np.unique(data['no'])):
+        for img_id in np.unique(data['no']):
 
             # Setting maximum index
             index = np.where(data['no'] == img_id)[0][0]
 
-            initial_date = data['start_time'][index]/3600
-            final_date = data['end_time'][index]/3600
+            initial_date = ( data['start_time'][index] + (rTime - datetime(1970,1,1)).total_seconds() ) / 3600
+            final_date   = ( data['end_time'][index] + (rTime - datetime(1970,1,1)).total_seconds()  ) / 3600
 
-            if (initial_date <= pair[1]) and (final_date >= pair[0]):
+            p1s = (pair[1]- datetime(1970,1,1)).total_seconds() / 3600
+            p0s = (pair[0]- datetime(1970,1,1)).total_seconds() / 3600
+
+            if (initial_date <= p1s) and (final_date >= p0s):
                 temp_list.append(img_id)
 
         # Appending list of interval-contained files
@@ -649,6 +658,12 @@ def video_deformations(data_in=None, config=None):
     elif path == None and data_in == None or path != None and data != None :
         print('You need to give at least one path or data to plot and not both ')
 
+    # reftime       = data['reftime']
+    # icetracker    = data['icetracker']
+    # timestep      = data['timestep']
+    # tolerance     = data['tolerance']
+    # trackingerror = data['trackingerror']
+
     """
     Preamble
     """
@@ -669,131 +684,139 @@ def video_deformations(data_in=None, config=None):
     # Create a list of axes to be iterated over
     ax_list = [ax_div, ax_shr, ax_vrt]
 
-    for ax in ax_list:
-        # Set the map extent in order to see the entire region of interest
-        ax.set_extent((-4400000, 2500000, 3500000, -2500000), ccrs.NorthPolarStereo())
-
     """
     Plotting
     """
 
-    img_nbr_lists, date_pairs = divide_intervals(config=config)
+    img_nbr_lists, date_pairs = divide_intervals(config=config, data=data)
 
     print('--- Creating sea-ice deformation videos ---')
 
     # Iterating over all files (Unique triangulations)
-    for i in tqdm(date_pairs):
+    for i, pair in enumerate(tqdm(date_pairs)):
 
-        date = date_pairs[i][0]
+        # Set the map extent in order to see the entire region of interest
+        for ax in ax_list:
+            ax.set_extent((-4400000, 2500000, 3500000, -2500000), ccrs.NorthPolarStereo())
+
+        date = pair[0]
 
         img_nbr_list = img_nbr_lists[i]
 
-        # Obtaining number of rows corresponding to triangles in given file that will be iterated over
-        file_length = np.count_nonzero(data['no'] == i)
+        for patch_ind in img_nbr_list:
 
-        # Setting maximum index
-        min_index = np.where(data['no'] == i)[0][0]
-        max_index = np.where(data['no'] == i)[0][-1]+1
+            # Obtaining number of rows corresponding to triangles in given file that will be iterated over
+            # file_length = np.count_nonzero(data['no'] == i)
 
-        # Arranging triangle vertices in array for use in ax.tripcolor
-        triangles = np.stack((data['idx1'][min_index:max_index], data['idx2'][min_index:max_index],
-                    data['idx3'][min_index:max_index]), axis=-1)
+            # Setting maximum index
+            indices = np.where(data['no'] == patch_ind)[0]
 
-        # Filtering data range to that of the current "file"
-        start_lat1_temp, start_lat2_temp, start_lat3_temp = data['start_lat1'][min_index:max_index], \
-            data['start_lat2'][min_index:max_index], data['start_lat3'][min_index:max_index]
+            if len(indices) > 0 :
+                min_index = indices[0]
+                max_index = indices[-1]+1
 
-        start_lon1_temp, start_lon2_temp, start_lon3_temp = data['start_lon1'][min_index:max_index], \
-            data['start_lon2'][min_index:max_index], data['start_lon3'][min_index:max_index]
+                # Arranging triangle vertices in array for use in ax.tripcolor
+                triangles = np.stack((data['idx1'][min_index:max_index], data['idx2'][min_index:max_index],
+                            data['idx3'][min_index:max_index]), axis=-1)
 
-        start_lat, start_lon = recreate_coordinates(start_lat1_temp, start_lat2_temp, start_lat3_temp,
-                                                        start_lon1_temp, start_lon2_temp, start_lon3_temp,
-                                                        data['idx1'][min_index:max_index],
-                                                        data['idx2'][min_index:max_index],
-                                                        data['idx3'][min_index:max_index])
+                # Filtering data range to that of the current "file"
+                start_lat1_temp, start_lat2_temp, start_lat3_temp = data['start_lat1'][min_index:max_index], \
+                    data['start_lat2'][min_index:max_index], data['start_lat3'][min_index:max_index]
 
-        # Extracting deformation data
-        div_colours = data['div'][min_index:max_index]
-        shr_colours = data['shr'][min_index:max_index]
-        vrt_colours = data['vrt'][min_index:max_index]
+                start_lon1_temp, start_lon2_temp, start_lon3_temp = data['start_lon1'][min_index:max_index], \
+                    data['start_lon2'][min_index:max_index], data['start_lon3'][min_index:max_index]
 
-        # tranform the coordinates already to improve the plot efficiency
-        new_coords = proj.transform_points(trans, np.array(start_lon), np.array(start_lat))
+                start_lat, start_lon = recreate_coordinates(start_lat1_temp, start_lat2_temp, start_lat3_temp,
+                                                                start_lon1_temp, start_lon2_temp, start_lon3_temp,
+                                                                data['idx1'][min_index:max_index],
+                                                                data['idx2'][min_index:max_index],
+                                                                data['idx3'][min_index:max_index])
 
-        # create one triangulation object
-        tria = tri.Triangulation(new_coords[:,0], new_coords[:,1], triangles=triangles)
+                # Extracting deformation data
+                div_colours = data['div'][min_index:max_index]
+                shr_colours = data['shr'][min_index:max_index]
+                vrt_colours = data['vrt'][min_index:max_index]
 
-        if len(triangles) != 0:
-        # Plotting
-            cb_div = ax_div.tripcolor(tria, facecolors=div_colours, cmap='coolwarm', vmin=-0.04, vmax=0.04)
-            cb_shr = ax_shr.tripcolor(tria, facecolors=shr_colours, cmap='plasma', vmin=0, vmax=0.1)
-            cb_vrt = ax_vrt.tripcolor(tria, facecolors=vrt_colours, cmap='coolwarm', vmin=-0.1, vmax=0.1)
+                # tranform the coordinates already to improve the plot efficiency
+                new_coords = proj.transform_points(trans, np.array(start_lon), np.array(start_lat))
 
+                # create one triangulation object
+                tria = tri.Triangulation(new_coords[:,0], new_coords[:,1], triangles=triangles)
 
-    # Create a list of colorbars and titles to be iterated over
-    cb_list = [cb_div, cb_shr, cb_vrt]
-    title_list = ['Divergence Rate $(Days^{-1})$', 'Shear Rate $(Days^{-1})$', 'Vorticity $(Days^{-1})$']
-
-    Date_options = config['Date_options']
-    start_year   = Date_options['start_year']
-    end_year     = Date_options['end_year']
-    start_month  = Date_options['start_month']
-    end_month    = Date_options['end_month']
-    start_day    = Date_options['start_day']
-    end_day      = Date_options['end_day']
-
-    timestep     = Date_options['timestep']
-    tolerance    = Date_options['tolerance']
-
-    IO            = config['IO']
-    output_folder = IO['output_folder']
-    exp           = IO['exp']
-
-    # Iterate through all axes
-    for ax, title, cb in zip(ax_list, title_list, cb_list):
-        # Add a colorbar
-        plt.colorbar(cb, ax=ax)
-
-        # Add a title
-        ax.set_title(title + '\n' + start_year + '-' + start_month + '-' + start_day + ' to ' +
-                        end_year + '-' + end_month + '-' + end_day + ', ' + timestep + 'hr \u00B1 ' + tolerance )
-
-        # Add gridlines
-        ax.gridlines()
-
-        # Hide deformations over land
-        ax.add_feature(cfeature.LAND, zorder=100, edgecolor='k')
-
-        '''
-        _________________________________________________________________________________________
-        SAVE PLOTS
-        '''
-
-    # Set a directory to store figures for the current experiment
-    figsPath =  output_folder + '/' + exp + '/figs/'
-
-    # Create the directory if it does not exist already
-    os.makedirs(figsPath, exist_ok=True)
-
-    itr = config['Metadata']['icetracker']
-    # Create a prefix for the figure filenames
-    prefix = get_prefix(config = config)
-
-    # Create the figure filenames
-    div_path   = figsPath + prefix + '_div.png'
-    shr_path = figsPath + prefix + '_shr.png'
-    rot_path   = figsPath + prefix + '_vrt.png'
+                if len(triangles) != 0:
+                # Plotting
+                    cb_div = ax_div.tripcolor(tria, facecolors=div_colours, cmap='coolwarm', vmin=-0.04, vmax=0.04)
+                    cb_shr = ax_shr.tripcolor(tria, facecolors=shr_colours, cmap='plasma', vmin=0, vmax=0.1)
+                    cb_vrt = ax_vrt.tripcolor(tria, facecolors=vrt_colours, cmap='coolwarm', vmin=-0.1, vmax=0.1)
 
 
-    for fig, fig_path in zip([fig_div, fig_shr, fig_vrt], [div_path, shr_path, rot_path]):
+        # Create a list of colorbars and titles to be iterated over
+        title_list = ['Divergence Rate $(Days^{-1})$', 'Shear Rate $(Days^{-1})$', 'Vorticity $(Days^{-1})$']
 
-        # Check if the figures already exist. If they do, delete them.
-        if os.path.isfile(fig_path):
-            os.remove(fig_path)
+        Date_options = config['Date_options']
+        start_year   = Date_options['start_year']
+        end_year     = Date_options['end_year']
+        start_month  = Date_options['start_month']
+        end_month    = Date_options['end_month']
+        start_day    = Date_options['start_day']
+        end_day      = Date_options['end_day']
 
-        # Save the new figures
-        print('Saving deformation figure at ',fig_path)
-        fig.savefig(fig_path, bbox_inches='tight', dpi=600)
+        timestep     = Date_options['timestep']
+        tolerance    = Date_options['tolerance']
+
+        IO            = config['IO']
+        output_folder = IO['output_folder']
+        exp           = IO['exp']
+
+        # Iterate through all axes
+        for ax, title in zip(ax_list, title_list):
+            # Add a colorbar
+            # plt.colorbar(cb, ax=ax)
+
+            # Add a title
+            ax.set_title(title + '\n' + date.strftime('%Y-%m-%d %H:%M:%S') )
+
+            # Add gridlines
+            ax.gridlines()
+
+            # Hide deformations over land
+            ax.add_feature(cfeature.LAND, zorder=100, edgecolor='k')
+
+
+
+            '''
+            _________________________________________________________________________________________
+            SAVE PLOTS
+            '''
+
+        # Set a directory to store figures for the current experiment
+        figsPath =  output_folder + '/' + exp + '/vids/'
+
+        # Create the directory if it does not exist already
+        os.makedirs(figsPath, exist_ok=True)
+
+        itr = config['Metadata']['icetracker']
+        # Create a prefix for the figure filenames
+        prefix = get_prefix(config = config)
+
+        # Create the figure filenames
+        div_path   = figsPath + prefix + '_' + str(i) + '_div.png'
+        shr_path = figsPath + prefix + '_' + str(i) + '_shr.png'
+        rot_path   = figsPath + prefix + '_' + str(i) + '_vrt.png'
+
+        for fig, fig_path in zip([fig_div, fig_shr, fig_vrt], [div_path, shr_path, rot_path]):
+
+            # Check if the figures already exist. If they do, delete them.
+            if os.path.isfile(fig_path):
+                os.remove(fig_path)
+
+            # Save the new figures
+            # print('Saving deformation figure at ',fig_path)
+            fig.savefig(fig_path, bbox_inches='tight', dpi=600)
+
+        # clean the axes
+        for ax in ax_list:
+            ax.cla()
 
     return None
 
@@ -810,6 +833,9 @@ if __name__ == '__main__':
 
     if config['netcdf_tools']['plot_deformation']:
         plot_deformations(config=config)
+
+    if config['netcdf_tools']['make_video']:
+        video_deformations(config=config)
 
     # Display the run time
     print("--- %s seconds ---" % (time.time() - start_time))
