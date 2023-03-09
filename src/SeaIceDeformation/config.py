@@ -151,6 +151,8 @@ def filter_data(config=None):
         sat_list = ['s1/']
     elif satellite == 'RCM':
         sat_list = ['rcm/']
+    elif satellite == 'RCM_new':
+        sat_list = ['rcm_new/']
     else:
         sys.exit("Oh, original, but satellite data other than RCM or S1 is not defined!!")
 
@@ -241,10 +243,14 @@ def filter_data(config=None):
 
                 # Filtering data files by date
                 for filename in os.listdir(data_path):
-
-                    # Extracting initial and final dates from data file names
-                    iDate = datetime.strptime(filename[6:20], '%Y%m%d%H%M%S')
-                    fDate = datetime.strptime(filename[21:35], '%Y%m%d%H%M%S')
+                    if satellite == 'RCM_new':
+                        txt = filename.split('_')
+                        iDate = datetime.strptime("%s%s" % (txt[5],txt[6]), '%Y%m%d%H%M%S')
+                        fDate = datetime.strptime("%s%s" % (txt[15],txt[16]), '%Y%m%d%H%M%S')
+                    else:
+                        # Extracting initial and final dates from data file names
+                        iDate = datetime.strptime(filename[6:20], '%Y%m%d%H%M%S')
+                        fDate = datetime.strptime(filename[21:35], '%Y%m%d%H%M%S')
 
                     # Checking if all files from iDate to fDate will be loaded (timestep == '0')
                     if timestep != '0':

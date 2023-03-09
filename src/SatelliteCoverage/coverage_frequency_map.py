@@ -138,12 +138,15 @@ def coverage_timeseries(interval_list, date_pairs, xbins_map, ybins_map, config=
     for i in tqdm(range(len(interval_list)), position=0, leave=True):
         # Loads data and converts to x/y for each interval
         interval_df = compile_data(raw_paths=interval_list[i])
-
         # Skips empty lists
         try:
             xy = convert_to_grid(interval_df['lon'], interval_df['lat'])
-        except KeyError:
-            df.loc[len(df.index)] = [np.nan, np.nan, start_date, end_date]
+        #except KeyError:
+        except:
+            print("Problematic paths is: ",interval_list[i])
+            #print(start_date,end_date)
+            #segsd
+            #df.loc[len(df.index)] = [np.nan, np.nan, start_date, end_date]
             continue
 
         # Generates histogram (2d np array)
@@ -223,7 +226,7 @@ def interval_frequency_histogram2d(interval_list, xbins_map, ybins_map, config=N
 
     # Initializing empty numpy array (2D histogram)
     H = np.array([])
-
+    flag = 0
     # Iterating over each interval
     for i in tqdm(range(len(interval_list)), position=0, leave=True):
         # Loads data and converts to x/y for each interval
@@ -232,6 +235,7 @@ def interval_frequency_histogram2d(interval_list, xbins_map, ybins_map, config=N
         # Skips empty lists
         try:
             xy = convert_to_grid(interval_df['lon'], interval_df['lat'])
+            flag = flag + 1
         except KeyError:
             xy = (0,0)
             continue
@@ -240,9 +244,8 @@ def interval_frequency_histogram2d(interval_list, xbins_map, ybins_map, config=N
         histogram = coverage_histogram2d(xy, xbins_map, ybins_map)
         histogram[histogram > 0.0] = 1.0
         # Changing size of total histogram (only on first run)
-        if i == 0:
+        if flag == 1:
             H.resize(histogram.shape)
-
 
         # Adding interval-specific histogram to total histogram
         H = H + histogram
