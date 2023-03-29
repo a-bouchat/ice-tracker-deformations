@@ -26,6 +26,7 @@ import cartopy.feature as cfeature
 from tqdm import tqdm
 import haversine as hs
 from datetime import datetime, timedelta
+from bisect import bisect_left, bisect_right
 
 # Code from other files
 from SatelliteCoverage.config import read_config
@@ -443,9 +444,9 @@ def plot_deformations(data_in=None, config=None):
         # Obtaining number of rows corresponding to triangles in given file that will be iterated over
         file_length = np.count_nonzero(data['no'] == i)
 
-        # Setting maximum index
-        min_index = np.where(data['no'] == i)[0][0]
-        max_index = np.where(data['no'] == i)[0][-1]+1
+        # Setting indexes
+        min_index = bisect_left(data['no'], i)
+        max_index = bisect_right(data['no'], i)
 
         # Arranging triangle vertices in array for use in ax.tripcolor
         triangles = np.stack((data['idx1'][min_index:max_index], data['idx2'][min_index:max_index],
@@ -608,16 +609,19 @@ def divide_intervals(config=None, data=None):
 
     # Sorting files into intervals
     interval_list = []
-    for pair in tqdm(date_pairs):
+    for pair in tqdm(date_pairs, position=0, leave=True):
 
         # Initializing temporary list to store dates in interval
         temp_list = []
 
         # Checking if date range of file overlaps with interval (if true, append)
-        for img_id in np.unique(data['no']):
+        for img_id in tqdm(np.unique(data['no']), position=1, leave=False):
 
             # Setting maximum index
-            index = np.where(data['no'] == img_id)[0][0]
+            # index = np.where(data['no'] == img_id)[0][0]
+            # faster O(log(n))
+            index = bisect_left(data['no'], img_id)
+
 
             initial_date = ( data['start_time'][index] + (rTime - datetime(1970,1,1)).total_seconds() ) / 3600
             final_date   = ( data['end_time'][index] + (rTime - datetime(1970,1,1)).total_seconds()  ) / 3600
@@ -699,7 +703,7 @@ def video_deformations(data_in=None, config=None):
         for ax in ax_list:
             ax.set_extent((-4400000, 2500000, 3500000, -2500000), ccrs.NorthPolarStereo())
 
-        date = pair[0]
+        date = 0.5*(pair[0]+pair[1])
 
         img_nbr_list = img_nbr_lists[i]
 
@@ -708,46 +712,43 @@ def video_deformations(data_in=None, config=None):
             # Obtaining number of rows corresponding to triangles in given file that will be iterated over
             # file_length = np.count_nonzero(data['no'] == i)
 
-            # Setting maximum index
-            indices = np.where(data['no'] == patch_ind)[0]
+            # Setting indexes
+            min_index = bisect_left(data['no'], patch_ind)
+            max_index = bisect_right(data['no'], patch_ind)
 
-            if len(indices) > 0 :
-                min_index = indices[0]
-                max_index = indices[-1]+1
+            # Arranging triangle vertices in array for use in ax.tripcolor
+            triangles = np.stack((data['idx1'][min_index:max_index], data['idx2'][min_index:max_index],
+                        data['idx3'][min_index:max_index]), axis=-1)
 
-                # Arranging triangle vertices in array for use in ax.tripcolor
-                triangles = np.stack((data['idx1'][min_index:max_index], data['idx2'][min_index:max_index],
-                            data['idx3'][min_index:max_index]), axis=-1)
+            # Filtering data range to that of the current "file"
+            start_lat1_temp, start_lat2_temp, start_lat3_temp = data['start_lat1'][min_index:max_index], \
+                data['start_lat2'][min_index:max_index], data['start_lat3'][min_index:max_index]
 
-                # Filtering data range to that of the current "file"
-                start_lat1_temp, start_lat2_temp, start_lat3_temp = data['start_lat1'][min_index:max_index], \
-                    data['start_lat2'][min_index:max_index], data['start_lat3'][min_index:max_index]
+            start_lon1_temp, start_lon2_temp, start_lon3_temp = data['start_lon1'][min_index:max_index], \
+                data['start_lon2'][min_index:max_index], data['start_lon3'][min_index:max_index]
 
-                start_lon1_temp, start_lon2_temp, start_lon3_temp = data['start_lon1'][min_index:max_index], \
-                    data['start_lon2'][min_index:max_index], data['start_lon3'][min_index:max_index]
+            start_lat, start_lon = recreate_coordinates(start_lat1_temp, start_lat2_temp, start_lat3_temp,
+                                                            start_lon1_temp, start_lon2_temp, start_lon3_temp,
+                                                            data['idx1'][min_index:max_index],
+                                                            data['idx2'][min_index:max_index],
+                                                            data['idx3'][min_index:max_index])
 
-                start_lat, start_lon = recreate_coordinates(start_lat1_temp, start_lat2_temp, start_lat3_temp,
-                                                                start_lon1_temp, start_lon2_temp, start_lon3_temp,
-                                                                data['idx1'][min_index:max_index],
-                                                                data['idx2'][min_index:max_index],
-                                                                data['idx3'][min_index:max_index])
+            # Extracting deformation data
+            div_colours = data['div'][min_index:max_index]
+            shr_colours = data['shr'][min_index:max_index]
+            vrt_colours = data['vrt'][min_index:max_index]
 
-                # Extracting deformation data
-                div_colours = data['div'][min_index:max_index]
-                shr_colours = data['shr'][min_index:max_index]
-                vrt_colours = data['vrt'][min_index:max_index]
+            # tranform the coordinates already to improve the plot efficiency
+            new_coords = proj.transform_points(trans, np.array(start_lon), np.array(start_lat))
 
-                # tranform the coordinates already to improve the plot efficiency
-                new_coords = proj.transform_points(trans, np.array(start_lon), np.array(start_lat))
+            # create one triangulation object
+            tria = tri.Triangulation(new_coords[:,0], new_coords[:,1], triangles=triangles)
 
-                # create one triangulation object
-                tria = tri.Triangulation(new_coords[:,0], new_coords[:,1], triangles=triangles)
-
-                if len(triangles) != 0:
-                # Plotting
-                    cb_div = ax_div.tripcolor(tria, facecolors=div_colours, cmap='coolwarm', vmin=-0.04, vmax=0.04)
-                    cb_shr = ax_shr.tripcolor(tria, facecolors=shr_colours, cmap='plasma', vmin=0, vmax=0.1)
-                    cb_vrt = ax_vrt.tripcolor(tria, facecolors=vrt_colours, cmap='coolwarm', vmin=-0.1, vmax=0.1)
+            if len(triangles) != 0:
+            # Plotting
+                cb_div = ax_div.tripcolor(tria, facecolors=div_colours, cmap='coolwarm', vmin=-0.04, vmax=0.04)
+                cb_shr = ax_shr.tripcolor(tria, facecolors=shr_colours, cmap='plasma', vmin=0, vmax=0.1)
+                cb_vrt = ax_vrt.tripcolor(tria, facecolors=vrt_colours, cmap='coolwarm', vmin=-0.1, vmax=0.1)
 
 
         # Create a list of colorbars and titles to be iterated over
@@ -798,11 +799,12 @@ def video_deformations(data_in=None, config=None):
         itr = config['Metadata']['icetracker']
         # Create a prefix for the figure filenames
         prefix = get_prefix(config = config)
+        interval    = config['options']['interval']
 
         # Create the figure filenames
-        div_path   = figsPath + prefix + '_' + str(i) + '_div.png'
-        shr_path = figsPath + prefix + '_' + str(i) + '_shr.png'
-        rot_path   = figsPath + prefix + '_' + str(i) + '_vrt.png'
+        div_path   = figsPath + prefix + '_int' + str(interval) + '_' + str(i) + '_div.png'
+        shr_path = figsPath + prefix + '_int' + str(interval) + '_' + str(i) + '_shr.png'
+        rot_path   = figsPath + prefix + '_int' + str(interval) + '_' + str(i) + '_vrt.png'
 
         for fig, fig_path in zip([fig_div, fig_shr, fig_vrt], [div_path, shr_path, rot_path]):
 
